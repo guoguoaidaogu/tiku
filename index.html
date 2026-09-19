@@ -1,0 +1,1459 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JSON 查询与编辑</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --border: #2b3040;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #4f8cff;
+    --ok: #37d399;
+    --warn: #f5c451;
+    --err: #ff6b6b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; letter-spacing: .2px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  header code { font-family: var(--mono); color: var(--accent); }
+  header .top { display: flex; align-items: flex-start; gap: 16px; }
+  header .titles { min-width: 0; }
+  .lang { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .lang select { width: auto; font-family: inherit; font-size: 13px; padding: 6px 10px; }
+  .visually-hidden {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  /* Shown only when i18n/ itself could not be read (see showBootError). */
+  .boot-error { max-width: 720px; margin: 12vh auto; padding: 0 24px; }
+  .boot-error h1 { font-size: 18px; margin: 0 0 12px; }
+  .boot-error p {
+    margin: 0 0 18px; padding: 14px 16px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 13px; line-height: 1.6;
+    white-space: pre-wrap; overflow-x: auto;
+  }
+  .boot-error select { width: auto; font-size: 13px; padding: 6px 10px; }
+
+  main { flex: 1; display: flex; flex-direction: column; padding: 18px 24px 22px; gap: 14px; min-height: 0; }
+
+  /* --- tabs --- */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    align-self: flex-start;
+  }
+  .tabs button {
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    padding: 7px 22px;
+    border-radius: 7px;
+    font-size: 14px;
+  }
+  .tabs button:hover:not(:disabled) { border: 0; color: var(--text); }
+  .tabs button.active { background: var(--accent); color: #fff; }
+  .tabs button.active:hover { color: #fff; }
+
+  .pane { display: flex; flex-direction: column; gap: 14px; min-height: 0; flex: 1; }
+
+  /* --- pickers --- */
+  .picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 18px;
+    padding: 13px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .fieldgroup { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .fieldgroup.chapter { flex: 0 1 210px; }
+  .fieldgroup.file { flex: 1 1 280px; }
+  label.field { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  select, input[type=search], input[type=text], textarea {
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    width: 100%;
+    min-width: 0;
+    resize: vertical;
+  }
+  select { font-family: var(--mono); cursor: pointer; }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  select:disabled, input:disabled, textarea:disabled { opacity: .55; cursor: default; }
+  button {
+    font: inherit;
+    font-size: 14px;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    padding: 9px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+  /* --- query bar --- */
+  .querybar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 16px;
+    padding: 13px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .querybar .grow { flex: 1 1 300px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .querybar .modes { flex: 0 1 180px; display: flex; align-items: center; gap: 8px; }
+  .querybar input[type=search] { font-family: var(--mono); }
+  .querybar .qinfo { font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--muted);
+    min-height: 20px;
+  }
+  .bar .spacer { flex: 1; }
+  .bar .path { font-family: var(--mono); color: var(--text); }
+  .pill {
+    font-size: 12px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .pill.ok { color: var(--ok); border-color: rgba(55,211,153,.4); }
+  .pill.warn { color: var(--warn); border-color: rgba(245,196,81,.4); }
+  .pill.err { color: var(--err); border-color: rgba(255,107,107,.4); }
+
+  /* --- results --- */
+  .results { flex: 1; min-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 12px 15px 13px; }
+  .card:focus { outline: none; border-color: var(--accent); }
+  .card .key { margin: 0; font-family: var(--mono); font-size: 14px; font-weight: 600; letter-spacing: .2px; word-break: break-word; }
+  .card .key mark { background: rgba(79,140,255,.3); color: #cfe0ff; border-radius: 3px; padding: 0 2px; }
+  .card .count { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 8px; }
+  .vals { margin: 8px 0 0; padding-left: 20px; }
+  .vals li { font-size: 14px; word-break: break-word; }
+  .vals li::marker { color: var(--muted); }
+  .vals li.none { list-style: none; margin-left: -20px; color: var(--muted); font-style: italic; }
+  .fallback {
+    margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--panel-2);
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow: auto; max-height: 220px;
+  }
+  .note { color: var(--muted); font-size: 14px; padding: 16px 4px; }
+  .note.err { color: var(--err); font-family: var(--mono); font-size: 13px; white-space: pre-wrap; }
+
+  /* --- editor --- */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .toolbar .spacer { flex: 1; }
+  .toolbar .hint { font-size: 12px; color: var(--muted); }
+  .banner {
+    margin: 0;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    background: rgba(255,107,107,.1);
+    border: 1px solid rgba(255,107,107,.35);
+    color: var(--err);
+    white-space: pre-wrap;
+  }
+  .rows { flex: 1; min-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  .row.bad { border-color: rgba(255,107,107,.55); }
+  .row .left { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .row .left input { font-family: var(--mono); }
+  .row .right { flex: 2 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .row textarea { font-family: var(--mono); font-size: 13px; min-height: 68px; }
+  .row .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .row .meta .bad-tag { color: var(--err); }
+  .row .rm { padding: 9px 12px; color: var(--muted); }
+  .row .rm:hover { color: var(--err); border-color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <div class="titles">
+      <h1 data-i18n="app.title">JSON 查询与编辑</h1>
+      <p data-i18n="app.subtitle">选择章节和文件，然后查询或编辑它的根键。</p>
+    </div>
+    <div class="lang">
+      <label class="field visually-hidden" for="langSelect" data-i18n="lang.label">界面语言</label>
+      <!-- Options are built from the LOCALES list in the script below. -->
+      <select id="langSelect" data-i18n-title="lang.title" title="切换界面语言"></select>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="tabs" role="tablist">
+    <button id="tabQuery" class="active" role="tab" aria-selected="true" data-pane="query" data-i18n="tab.query">查询</button>
+    <button id="tabEdit" role="tab" aria-selected="false" data-pane="edit" data-i18n="tab.edit">编辑</button>
+  </div>
+
+  <div class="picker">
+    <span class="fieldgroup chapter">
+      <label class="field" for="chapterSelect" data-i18n="picker.chapter">章节</label>
+      <select id="chapterSelect" disabled><option data-i18n="picker.loading">加载中…</option></select>
+    </span>
+    <span class="fieldgroup file">
+      <label class="field" for="fileSelect" data-i18n="picker.file">文件</label>
+      <select id="fileSelect" disabled><option data-i18n="picker.loading">加载中…</option></select>
+    </span>
+    <button id="reload" data-i18n="picker.refresh" data-i18n-title="picker.refreshTitle"
+            title="重新读取 assets/manifest.json">刷新列表</button>
+  </div>
+
+  <!-- ============================ QUERY ============================ -->
+  <section class="pane" id="paneQuery">
+    <div class="querybar">
+      <span class="grow">
+        <label class="field" for="query" data-i18n="query.label">查询</label>
+        <input type="search" id="query" data-i18n-placeholder="query.placeholder"
+               placeholder="搜索根键…" autocomplete="off" spellcheck="false" disabled>
+      </span>
+      <span class="modes">
+        <label class="field" for="mode" data-i18n="query.modeLabel">匹配方式</label>
+        <select id="mode" disabled data-i18n-title="query.modeTitle"
+                title="查询与根键的匹配方式">
+          <option value="contains" data-i18n="mode.contains">包含</option>
+          <option value="prefix" data-i18n="mode.prefix">前缀匹配</option>
+          <option value="exact" data-i18n="mode.exact">精确匹配</option>
+          <option value="regex" data-i18n="mode.regex">正则表达式</option>
+        </select>
+      </span>
+      <button id="clear" disabled data-i18n="query.clear">清空</button>
+      <span class="qinfo" id="queryInfo">—</span>
+    </div>
+
+    <div class="results" id="results">
+      <p class="note" data-i18n="query.chooseFile">选择一个文件以开始查询它的根键。</p>
+    </div>
+  </section>
+
+  <!-- ============================= EDIT ============================= -->
+  <section class="pane" id="paneEdit" hidden>
+    <div class="toolbar">
+      <button id="addRow" class="primary" disabled data-i18n="edit.addEntry">+ 添加条目</button>
+      <button id="revert" disabled data-i18n="edit.revert" data-i18n-title="edit.revertTitle"
+              title="放弃更改并从磁盘重新加载">还原</button>
+      <button id="copyJson" disabled data-i18n="edit.copy" data-i18n-title="edit.copyTitle"
+              title="将编辑后的 JSON 复制到剪贴板">复制 JSON</button>
+      <button id="downloadJson" disabled data-i18n="edit.download" data-i18n-title="edit.downloadTitle"
+              title="下载编辑后的 JSON（⌘/Ctrl+S）">下载 JSON</button>
+      <span class="spacer"></span>
+      <span class="hint" data-i18n="edit.hint">每行一个值 · 忽略末尾的空行</span>
+    </div>
+
+    <p class="banner" id="editBanner" hidden></p>
+
+    <div class="rows" id="rows">
+      <p class="note" data-i18n="edit.chooseFile">选择一个文件以开始编辑它的根键。</p>
+    </div>
+  </section>
+
+  <div class="bar">
+    <span class="path" id="fileInfo" data-i18n="bar.noFile">未加载文件</span>
+    <span class="spacer"></span>
+    <span class="pill" id="dirty" hidden data-i18n="bar.dirty">有未保存的更改</span>
+    <span class="pill" id="status" data-i18n="status.idle">空闲</span>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  const MANIFEST_URL = 'assets/manifest.json';
+  const ASSETS_BASE  = 'assets/';
+  const MAX_RESULTS  = 300;    // cap on rendered cards; the match count stays exact
+  const DEBOUNCE_MS  = 50;
+  const LANG_KEY     = 'json-query.lang';
+  const BASE_LANG    = 'en';       // locale every other one falls back to; must load
+  const DEFAULT_LANG = 'zh-Hans';  // used until the visitor picks a language
+
+  // Used only if assets/manifest.json cannot be fetched but the page is still
+  // served over HTTP (i.e. the manifest was deleted). Keep in sync by running
+  // `python3 scripts/build_manifest.py`.
+  const FALLBACK_FILES = [
+    'chapter1/test1_1.json',
+    'chapter2/test2_1.json',
+    'chapter2/test2_2.json'
+  ];
+
+  /* ============================== i18n ============================== */
+
+  // Translations live in i18n/<code>.json so they can be edited, reviewed and
+  // handed to a translator without touching this file. To add a language, drop
+  // in i18n/<code>.json and add one entry below — the <select> is built from
+  // this list, so no markup change is needed. Verify the result with:
+  //     python3 scripts/check_i18n.py
+  const LOCALES = [
+    { code: 'en',      name: 'English'  },
+    { code: 'zh-Hans', name: '简体中文' }
+  ];
+  const CATALOG_DIR = 'i18n/';
+
+  // Filled by loadCatalogs(). Empty until then, and nothing may render before it.
+  const MESSAGES = {};
+
+  let lang = DEFAULT_LANG;
+
+  function localeCodes() {
+    return LOCALES.map((l) => l.code);
+  }
+
+  function hasLocale(code) {
+    return localeCodes().indexOf(code) !== -1;
+  }
+
+  function lookup(code, key) {
+    const bundle = MESSAGES[code];
+    return bundle ? bundle[key] : undefined;
+  }
+
+  let pluralRules = null;
+  let pluralRulesLang = null;
+
+  function pluralCategory(n) {
+    if (n === undefined) return 'other';
+    try {
+      // Rebuild when the locale changes: the cached rules are language-specific,
+      // and reusing zh's rules for en would silently pick "other" for n === 1.
+      if (!pluralRules || pluralRulesLang !== lang) {
+        pluralRules = new Intl.PluralRules(lang);
+        pluralRulesLang = lang;
+      }
+      return pluralRules.select(Number(n));
+    } catch (err) {
+      return Number(n) === 1 ? 'one' : 'other';   // no Intl: good enough for en/zh
+    }
+  }
+
+  // A message is either a string with {placeholders}, or an object keyed by CLDR
+  // plural category — e.g. { "one": "{n} value", "other": "{n} values" }.
+  function format(msg, vars) {
+    if (msg !== null && typeof msg === 'object') {
+      const cat = pluralCategory(vars && vars.n);
+      const picked = msg[cat] !== undefined ? msg[cat] : msg.other;
+      return picked === undefined ? '' : format(picked, vars);
+    }
+    if (!vars) return msg;
+    return String(msg).replace(/\{(\w+)\}/g, (whole, name) =>
+      Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : whole);
+  }
+
+  // Look `key` up in the active locale, falling back to the base locale, then to
+  // the key itself so a missing message is visible rather than blank.
+  function t(key, vars) {
+    let msg = lookup(lang, key);
+    if (msg === undefined) msg = lookup(BASE_LANG, key);
+    if (msg === undefined) {
+      console.warn('[json-query] missing message:', key, 'in', lang);
+      return key;
+    }
+    return format(msg, vars);
+  }
+
+  // The locale to actually use for `code`: it must be shipped *and* its catalog
+  // must have loaded, otherwise fall back to the default, then to the base.
+  function usableLocale(code) {
+    if (code && hasLocale(code) && MESSAGES[code]) return code;
+    if (MESSAGES[DEFAULT_LANG]) return DEFAULT_LANG;
+    return BASE_LANG;
+  }
+
+  // There is deliberately no Accept-Language sniffing: with Chinese as the
+  // default, honouring the browser would just be a second way to not be Chinese.
+  // A stored choice always wins.
+  function detectLang() {
+    try {
+      const stored = localStorage.getItem(LANG_KEY);
+      if (stored && hasLocale(stored)) return stored;
+    } catch (err) {
+      // Storage can be blocked (private mode, some file:// contexts); just default.
+    }
+    return DEFAULT_LANG;
+  }
+
+  function persistLang(code) {
+    try { localStorage.setItem(LANG_KEY, code); } catch (err) { /* storage optional */ }
+  }
+
+  // Returns false when the base locale could not be read, which makes the app
+  // unrunnable: every screen needs its strings.
+  async function loadCatalogs() {
+    const bundles = await Promise.all(localeCodes().map(async (code) => {
+      try {
+        const url = CATALOG_DIR + encodeURIComponent(code) + '.json';
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const bundle = await res.json();
+        if (bundle === null || typeof bundle !== 'object' || Array.isArray(bundle)) {
+          throw new Error('expected a JSON object');
+        }
+        return bundle;
+      } catch (err) {
+        console.warn('[json-query] could not load locale "' + code + '":', err.message);
+        return null;
+      }
+    }));
+
+    localeCodes().forEach((code, i) => { if (bundles[i]) MESSAGES[code] = bundles[i]; });
+    return Boolean(MESSAGES[BASE_LANG]);
+  }
+
+  // Last resort when the catalogs themselves are unreachable — the page was
+  // opened over file://, or i18n/ is missing. Deliberately inline: there are no
+  // loaded messages to render with, and the app cannot work without them anyway.
+  const BOOTSTRAP = {
+    en: {
+      title: 'Translations unavailable',
+      body: 'Could not load the interface translations from i18n/.\n\n' +
+            'If this page was opened directly from disk, the browser blocks reading\n' +
+            'local files (file:// security rule). Serve the folder over HTTP instead:\n\n' +
+            '    python3 -m http.server 8000   # from the folder containing index.html\n' +
+            '    open http://localhost:8000/\n'
+    },
+    'zh-Hans': {
+      title: '界面翻译不可用',
+      body: '无法从 i18n/ 加载界面翻译。\n\n' +
+            '如果此页面是直接从磁盘打开的，浏览器会阻止读取本地文件\n' +
+            '（file:// 安全限制）。请改用 HTTP 提供该目录：\n\n' +
+            '    python3 -m http.server 8000   # 在包含 index.html 的目录中执行\n' +
+            '    open http://localhost:8000/\n'
+    }
+  };
+
+  function showBootError() {
+    if (!BOOTSTRAP[lang]) lang = BOOTSTRAP[DEFAULT_LANG] ? DEFAULT_LANG : BASE_LANG;
+    const msg = BOOTSTRAP[lang];
+
+    document.documentElement.lang = lang;
+    document.title = msg.title;
+
+    const box = document.createElement('div');
+    box.className = 'boot-error';
+
+    const h = document.createElement('h1');
+    h.textContent = msg.title;
+
+    const p = document.createElement('p');
+    p.textContent = msg.body;
+
+    box.append(h, p);
+
+    // The normal switcher is built from loaded messages, so offer a minimal one
+    // here — language names are self-referential and need no catalog.
+    const langs = LOCALES.filter((l) => BOOTSTRAP[l.code]);
+    if (langs.length > 1) {
+      const sel = document.createElement('select');
+      sel.id = 'bootLang';
+      for (const l of langs) {
+        const opt = document.createElement('option');
+        opt.value = l.code;
+        opt.textContent = l.name;
+        opt.lang = l.code;
+        sel.appendChild(opt);
+      }
+      sel.value = lang;
+      sel.addEventListener('change', () => {
+        lang = sel.value;
+        persistLang(lang);
+        showBootError();
+      });
+      box.appendChild(sel);
+    }
+
+    document.body.textContent = '';
+    document.body.appendChild(box);
+  }
+
+  const $ = (id) => document.getElementById(id);
+
+  const tabQueryEl = $('tabQuery'),  tabEditEl = $('tabEdit');
+  const paneQueryEl= $('paneQuery'), paneEditEl= $('paneEdit');
+  const chapterEl  = $('chapterSelect'), fileEl = $('fileSelect'), reloadEl = $('reload');
+  const queryEl    = $('query'),  modeEl = $('mode'), clearEl = $('clear');
+  const queryInfoEl= $('queryInfo'), resultsEl = $('results');
+  const rowsEl     = $('rows'), bannerEl = $('editBanner');
+  const addRowEl   = $('addRow'), revertEl = $('revert');
+  const copyEl     = $('copyJson'), downloadEl = $('downloadJson');
+  const fileInfoEl = $('fileInfo'), dirtyEl = $('dirty'), statusEl = $('status');
+  const langEl     = $('langSelect');
+
+  let chapters    = [];      // [{ id, label, files: [{ path, label }] }]
+  let currentPath = null;
+  let currentChapter = null; // chapter id that is actually loaded
+  let original    = null;    // JSON as loaded from disk (deep copy), or null
+  let model       = [];      // working copy: [{ key, values: [], el }]
+  let entries     = [];      // query index derived from `model`
+  let dirty       = false;
+  let view        = 'query'; // 'query' | 'edit'
+  let timer       = null;
+
+  // Language-independent render state, so switching language can repaint
+  // everything without re-reading anything from disk or losing edits.
+  let lastPaths     = null;  // last manifest file list
+  let manifestState = 'ok';  // 'ok' | 'fallback' | 'blocked'
+  let loadFailure   = null;  // null | { kind: 'fetch'|'shape', ... }
+  let statusState   = { key: 'status.idle', kind: '' };
+  let fileInfoState = { kind: 'key', key: 'bar.noFile' };
+  // The manifest's own default selection; see readManifestDefault().
+  let manifestDefault = { chapter: null, path: null };
+
+  /* ============================== i18n ============================== */
+
+  // Paint every element that opted in with a data-i18n* attribute.
+  function applyStaticText() {
+    document.documentElement.lang = lang;
+    document.title = t('app.title');
+
+    for (const el of document.querySelectorAll('[data-i18n]'))
+      el.textContent = t(el.getAttribute('data-i18n'));
+    for (const el of document.querySelectorAll('[data-i18n-title]'))
+      el.title = t(el.getAttribute('data-i18n-title'));
+    for (const el of document.querySelectorAll('[data-i18n-placeholder]'))
+      el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
+    for (const el of document.querySelectorAll('[data-i18n-aria-label]'))
+      el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria-label')));
+  }
+
+  function errorDetail(err) {
+    // fetchText attaches a translatable descriptor; anything else is browser text.
+    if (err && err.detail) return err.detail;
+    return { text: (err && err.message) || String(err) };
+  }
+
+  function renderDetail(detail) {
+    return detail && detail.key ? t(detail.key, detail.vars) : String(detail.text);
+  }
+
+  function applyFileInfo() {
+    fileInfoEl.textContent = fileInfoState.kind === 'key'
+      ? t(fileInfoState.key)
+      : fileInfoState.value;
+  }
+
+  function applyStatus() {
+    statusEl.textContent = t(statusState.key, statusState.vars);
+    statusEl.className = 'pill' + (statusState.kind ? ' ' + statusState.kind : '');
+  }
+
+  // Rebuild the picker option labels in the active language without touching
+  // the loaded file or the working copy.
+  function refreshPicker() {
+    if (manifestState === 'blocked' || !lastPaths) return;
+
+    chapters = groupByChapter(lastPaths);
+
+    if (!chapters.length) {
+      resetSelect(chapterEl, 'picker.noneFound');
+      resetSelect(fileEl, 'picker.noJsonFilesFound');
+      return;
+    }
+
+    const chapterId = chapterEl.value, filePath = fileEl.value;
+    fillSelect(chapterEl, chapters.map((c) => ({ value: c.id, label: c.label })), chapterId);
+
+    const group = chapters.find((c) => c.id === chapterEl.value) || chapters[0];
+    if (!group.files.length) {
+      resetSelect(fileEl, 'picker.noJsonFiles');
+      return;
+    }
+    fillSelect(fileEl, fileItems(group), filePath);
+  }
+
+  // Repaint everything currently on screen after a language change.
+  function rerender() {
+    const savedStatus = statusState;
+
+    applyStaticText();
+    refreshPicker();
+    applyFileInfo();
+
+    if (manifestState === 'blocked') {
+      setNote(resultsEl, t('msg.fileProtocol'), true);
+      setNote(rowsEl, t('msg.fileProtocol'), true);
+    } else if (loadFailure) {
+      renderRows();
+      showFailureNotes();
+    } else {
+      renderRows();
+      if (view === 'query') runQuery();
+    }
+
+    statusState = savedStatus;
+    applyStatus();
+  }
+
+  function failureMessage() {
+    if (loadFailure.kind === 'shape') {
+      const what = loadFailure.whatKey ? t(loadFailure.whatKey) : loadFailure.whatText;
+      return t('msg.badShape', { what: what });
+    }
+    return t('msg.loadFailed', {
+      path: loadFailure.path,
+      msg: renderDetail(loadFailure.detail)
+    });
+  }
+
+  // Must run *after* renderRows(), which clears both containers.
+  function showFailureNotes() {
+    const msg = failureMessage();
+    setNote(resultsEl, msg, true);
+    setNote(rowsEl, msg, true);
+  }
+
+  function setLang(next) {
+    lang = usableLocale(next);
+    persistLang(lang);
+    langEl.value = lang;
+    rerender();
+  }
+
+  /* ============================= status ============================= */
+
+  // `key` is a message key, never literal text, so the pill can be re-localized.
+  function setStatus(key, kind, vars) {
+    statusState = { key: key, kind: kind || '', vars: vars };
+    applyStatus();
+  }
+
+  function setDirty(flag) {
+    dirty = flag;
+    dirtyEl.hidden = !flag;
+  }
+
+  function setNote(container, text, isError) {
+    container.textContent = '';
+    const p = document.createElement('p');
+    p.className = 'note' + (isError ? ' err' : '');
+    p.textContent = text;
+    container.appendChild(p);
+  }
+
+  /* ============================ the model =========================== */
+
+  // JSON object -> ordered model. Values are normalised to arrays of strings so
+  // the editor can treat every root key the same way.
+  function objectToModel(data) {
+    const keys = Object.keys(data);
+    const out = new Array(keys.length);
+    for (let i = 0; i < keys.length; i++) {
+      out[i] = { key: keys[i], values: toValueList(data[keys[i]]), el: null };
+    }
+    return out;
+  }
+
+  function toValueList(value) {
+    if (Array.isArray(value)) {
+      return value.map((v) => (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v));
+    }
+    if (value !== null && typeof value === 'object') return [JSON.stringify(value)];
+    return [String(value)];
+  }
+
+  function isStandardValue(value) {
+    return Array.isArray(value) && value.every((v) => typeof v === 'string');
+  }
+
+  function buildIndex() {
+    entries = model.map((m) => ({
+      key: m.key,
+      lower: m.key.toLowerCase(),
+      value: m.values.slice()
+    }));
+  }
+
+  /* ========================== query service ========================= */
+
+  function matchRange(entry, needle, mode) {
+    if (!needle) return null;
+
+    switch (mode) {
+      case 'exact':
+        return entry.lower === needle ? [0, entry.key.length] : null;
+      case 'prefix':
+        return entry.lower.startsWith(needle) ? [0, needle.length] : null;
+      default: {
+        const i = entry.lower.indexOf(needle);
+        return i === -1 ? null : [i, i + needle.length];
+      }
+    }
+  }
+
+  function keyNode(key, range) {
+    const h = document.createElement('h2');
+    h.className = 'key';
+    if (!range) {
+      h.appendChild(document.createTextNode(key));
+      return h;
+    }
+    h.appendChild(document.createTextNode(key.slice(0, range[0])));
+    const mark = document.createElement('mark');
+    mark.textContent = key.slice(range[0], range[1]);
+    h.appendChild(mark);
+    h.appendChild(document.createTextNode(key.slice(range[1])));
+    return h;
+  }
+
+  function valueNode(values) {
+    const ul = document.createElement('ul');
+    ul.className = 'vals';
+
+    if (!values.length) {
+      const li = document.createElement('li');
+      li.className = 'none';
+      li.textContent = t('edit.emptyList');
+      ul.appendChild(li);
+      return ul;
+    }
+    for (const v of values) {
+      const li = document.createElement('li');
+      li.textContent = v;
+      ul.appendChild(li);
+    }
+    return ul;
+  }
+
+  function cardNode(entry, range) {
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.tabIndex = -1;
+
+    const head = keyNode(entry.key, range);
+    const c = document.createElement('span');
+    c.className = 'count';
+    c.textContent = t('edit.count', { n: entry.value.length });
+    head.appendChild(c);
+
+    card.appendChild(head);
+    card.appendChild(valueNode(entry.value));
+    return card;
+  }
+
+  function runQuery() {
+    resultsEl.textContent = '';
+
+    if (!entries.length) {
+      queryInfoEl.textContent = t('query.empty');
+      setNote(resultsEl, t('query.chooseFile'));
+      return;
+    }
+
+    const raw = queryEl.value;
+    const mode = modeEl.value;
+    clearEl.disabled = raw === '';
+
+    const browsing = raw.trim() === '';
+    let matcher = () => null;
+
+    if (!browsing) {
+      if (mode === 'regex') {
+        let re;
+        try {
+          re = new RegExp(raw, 'i');
+        } catch (err) {
+          queryInfoEl.textContent = t('query.zeroMatches');
+          setStatus('status.badRegex', 'err');
+          setNote(resultsEl, t('query.invalidRegex', { msg: err.message }), true);
+          return;
+        }
+        matcher = (entry) => {
+          const m = re.exec(entry.key);
+          return m ? [m.index, m.index + m[0].length] : null;
+        };
+      } else {
+        const needle = raw.trim().toLowerCase();
+        matcher = (entry) => matchRange(entry, needle, mode);
+      }
+    }
+
+    const t0 = performance.now();
+    const matched = [];
+    let total = 0;
+
+    for (const entry of entries) {
+      const range = matcher(entry);
+      if (!browsing && range === null) continue;
+      total++;
+      if (matched.length < MAX_RESULTS) matched.push({ entry: entry, range: range });
+    }
+
+    const elapsed = performance.now() - t0;
+
+    if (!total) {
+      queryInfoEl.textContent = t('query.infoMatched', {
+        total: 0, n: entries.length, ms: elapsed.toFixed(2)
+      });
+      setStatus('status.noMatch');
+      setNote(resultsEl, t('query.noMatch', { q: JSON.stringify(raw) }));
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    for (const m of matched) frag.appendChild(cardNode(m.entry, browsing ? null : m.range));
+
+    if (total > matched.length) {
+      const p = document.createElement('p');
+      p.className = 'note';
+      p.textContent = t('query.showingFirst', { n: matched.length, total: total });
+      frag.appendChild(p);
+    }
+    resultsEl.appendChild(frag);
+
+    queryInfoEl.textContent = browsing
+      ? t('query.infoBrowsing', { total: total, ms: elapsed.toFixed(2) })
+      : t('query.infoMatched', { total: total, n: entries.length, ms: elapsed.toFixed(2) });
+    setStatus(browsing ? 'status.browsing' : 'status.matched', browsing ? null : 'ok');
+  }
+
+  function scheduleQuery() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(runQuery, DEBOUNCE_MS);
+  }
+
+  /* ============================== editor ============================ */
+
+  // Split a textarea into values: one per line, trailing blanks dropped.
+  function linesToValues(text) {
+    const lines = text.split('\n').map((l) => l.replace(/\s+$/, ''));
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return lines;
+  }
+
+  function valuesToText(values) {
+    return values.join('\n');
+  }
+
+  // Duplicate or missing keys cannot be represented in a JSON object; report
+  // them instead of silently dropping data.
+  function validate() {
+    const problems = [];
+    const seen = new Set();
+
+    for (const item of model) {
+      const key = item.key.trim();
+      if (key === '') problems.push(t('valid.emptyKey'));
+      else if (seen.has(key)) problems.push(t('valid.duplicateKey', { k: JSON.stringify(key) }));
+      else seen.add(key);
+    }
+
+    const nonStandard = Object.keys(originalKeysWithNonStandardValues()).length;
+    if (nonStandard) problems.push(t('valid.nonStandard', { n: nonStandard }));
+    return problems;
+  }
+
+  function originalKeysWithNonStandardValues() {
+    const map = {};
+    if (!original) return map;
+    for (const k of Object.keys(original)) {
+      if (!isStandardValue(original[k])) map[k] = true;
+    }
+    return map;
+  }
+
+  function modelToObject() {
+    const out = {};
+    for (const item of model) out[item.key.trim()] = item.values.slice();
+    return out;
+  }
+
+  function refreshDirty() {
+    if (!original) { setDirty(false); return; }
+    setDirty(JSON.stringify(modelToObject()) !== JSON.stringify(original));
+  }
+
+  function refreshEditState() {
+    const problems = validate();
+
+    bannerEl.hidden = problems.length === 0;
+    if (problems.length) bannerEl.textContent = problems.join('\n');
+
+    const ready = original !== null && problems.length === 0;
+    copyEl.disabled = !ready;
+    downloadEl.disabled = !ready;
+
+    for (const item of model) {
+      if (!item.el) continue;
+      const bad = item.key.trim() === '' ||
+                  model.some((o) => o !== item && o.key.trim() === item.key.trim());
+      item.el.row.classList.toggle('bad', bad);
+
+      const n = item.values.length;
+      item.el.count.textContent = t('edit.count', { n: n });
+      item.el.badTag.hidden = !bad;
+    }
+
+    refreshDirty();
+    if (!problems.length) setStatus(dirty ? 'status.edited' : 'status.ready', dirty ? 'warn' : 'ok');
+    else setStatus('status.invalidEdit', 'err');
+  }
+
+  function renderRows() {
+    rowsEl.textContent = '';
+
+    if (original === null) {
+      addRowEl.disabled = true;
+      revertEl.disabled = true;
+      copyEl.disabled = true;
+      downloadEl.disabled = true;
+      // A load failure or a blocked file:// page already put a message here.
+      if (!loadFailure && manifestState !== 'blocked') {
+        setNote(rowsEl, t('edit.chooseFile'));
+      }
+      return;
+    }
+
+    addRowEl.disabled = false;
+    revertEl.disabled = !dirty;
+
+    const frag = document.createDocumentFragment();
+
+    model.forEach((item, index) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+
+      const left = document.createElement('div');
+      left.className = 'left';
+      const keyInput = document.createElement('input');
+      keyInput.type = 'text';
+      keyInput.value = item.key;
+      keyInput.spellcheck = false;
+      keyInput.setAttribute('aria-label', t('edit.rootKeyAria'));
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const count = document.createElement('span');
+      const badTag = document.createElement('span');
+      badTag.className = 'bad-tag';
+      badTag.textContent = t('edit.badKey');
+      badTag.hidden = true;
+      meta.append(count, badTag);
+      left.append(keyInput, meta);
+
+      const right = document.createElement('div');
+      right.className = 'right';
+      const valInput = document.createElement('textarea');
+      valInput.value = valuesToText(item.values);
+      valInput.spellcheck = false;
+      valInput.setAttribute('aria-label', t('edit.valuesAria'));
+      right.appendChild(valInput);
+
+      const rm = document.createElement('button');
+      rm.className = 'rm';
+      rm.textContent = '✕';
+      rm.title = t('edit.removeTitle');
+      rm.setAttribute('aria-label', t('edit.removeAria'));
+
+      item.el = { row: row, keyInput: keyInput, valInput: valInput, count: count, badTag: badTag };
+
+      keyInput.addEventListener('input', () => {
+        item.key = keyInput.value;
+        refreshEditState();
+      });
+
+      valInput.addEventListener('input', () => {
+        item.values = linesToValues(valInput.value);
+        refreshEditState();
+      });
+
+      rm.addEventListener('click', () => {
+        model.splice(model.indexOf(item), 1);
+        renderRows();
+        refreshEditState();
+      });
+
+      row.append(left, right, rm);
+      frag.appendChild(row);
+    });
+
+    rowsEl.appendChild(frag);
+    refreshEditState();
+  }
+
+  function addEntry() {
+    if (original === null) return;
+    const item = { key: '', values: [], el: null };
+    model.push(item);
+    renderRows();
+    if (item.el) {
+      item.el.keyInput.focus();
+      item.el.row.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function editedJson() {
+    return JSON.stringify(modelToObject(), null, 2) + '\n';
+  }
+
+  /* ============================== files ============================= */
+
+  async function fetchText(url) {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) {
+      const err = new Error('HTTP ' + res.status);
+      // Keep the failure structured so it can be re-worded on a language change.
+      err.detail = { key: 'msg.httpError', vars: { status: res.status, url: url } };
+      throw err;
+    }
+    return res.text();
+  }
+
+  // Returns true when it is safe to replace the current working copy.
+  function confirmDiscardIfDirty(nextPath) {
+    if (!dirty) return true;
+    return window.confirm(t('confirm.discard', {
+      current: currentPath || t('confirm.thisFile'),
+      next: nextPath || t('confirm.anotherFile')
+    }));
+  }
+
+  async function load(path) {
+    if (!confirmDiscardIfDirty(path)) {
+      fileEl.value = currentPath || fileEl.value;   // snap the box back
+      return;
+    }
+
+    currentPath = path;
+    setStatus('status.loading');
+    queryEl.disabled = true;
+
+    let data;
+    try {
+      data = JSON.parse((await fetchText(ASSETS_BASE + encodeURI(path))).replace(/^\uFEFF/, ''));
+    } catch (err) {
+      entries = [];
+      model = [];
+      original = null;
+      loadFailure = { kind: 'fetch', path: path, detail: errorDetail(err) };
+      setDirty(false);
+      fileInfoState = { kind: 'path', value: path };
+      applyFileInfo();
+      queryInfoEl.textContent = t('query.empty');
+      setStatus('status.loadError', 'err');
+      renderRows();
+      showFailureNotes();
+      return;
+    }
+
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      entries = [];
+      model = [];
+      original = null;
+      loadFailure = Array.isArray(data)
+        ? { kind: 'shape', whatKey: 'msg.anArray' }
+        : { kind: 'shape', whatText: String(data) };
+      setDirty(false);
+      fileInfoState = { kind: 'path', value: path };
+      applyFileInfo();
+      queryInfoEl.textContent = t('query.empty');
+      setStatus('status.badShape', 'err');
+      renderRows();
+      showFailureNotes();
+      return;
+    }
+
+    original = data;
+    model = objectToModel(data);
+    loadFailure = null;
+    buildIndex();
+    setDirty(false);
+
+    fileInfoState = { kind: 'path', value: path };
+    applyFileInfo();
+    queryEl.disabled = false;
+    modeEl.disabled = false;
+
+    renderRows();
+    runQuery();
+  }
+
+  /* ========================= manifest + boxes ======================= */
+
+  function groupByChapter(paths) {
+    const groups = new Map();
+
+    for (const path of paths) {
+      const cut = path.indexOf('/');
+      const id    = cut === -1 ? '' : path.slice(0, cut);
+      const label = cut === -1 ? t('picker.topLevel') : id;
+      const file  = { path: path, label: cut === -1 ? path : path.slice(cut + 1) };
+
+      if (!groups.has(id)) groups.set(id, { id: id, label: label, files: [] });
+      groups.get(id).files.push(file);
+    }
+
+    return Array.from(groups.values()).sort(
+      (a, b) => (a.id === '') - (b.id === '') || a.label.localeCompare(b.label)
+    );
+  }
+
+  // `text` is a message key so the placeholder can be re-localized later.
+  function resetSelect(el, textKey) {
+    el.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.dataset.i18n = textKey;
+    opt.textContent = t(textKey);
+    el.appendChild(opt);
+    el.disabled = true;
+  }
+
+  function fillSelect(el, items, preferred) {
+    el.innerHTML = '';
+    for (const item of items) {
+      const opt = document.createElement('option');
+      opt.value = item.value;
+      opt.textContent = item.label;
+      el.appendChild(opt);
+    }
+    el.disabled = false;
+    // `!= null` rather than truthiness: the top-level pseudo-chapter has id ''.
+    if (preferred != null && items.some((i) => i.value === preferred)) el.value = preferred;
+  }
+
+  // The chapter's file options, with the manifest default marked so it is clear
+  // which file the page opens next time. Labels are rebuilt per language.
+  function fileItems(group) {
+    const suffix = t('picker.defaultSuffix');
+    return group.files.map((f) => ({
+      value: f.path,
+      label: f.path === manifestDefault.path ? f.label + suffix : f.label
+    }));
+  }
+
+  // Read the manifest's `default` block:
+  //   "default": { "chapter": "chapter2", "file": "test2_2.json" }
+  // `file` may also be a full path ("chapter2/test2_2.json"), and `chapter` may
+  // be omitted for a file at the top level. Missing or malformed -> nulls, and
+  // the picker falls back to the first chapter and file.
+  function readManifestDefault(data) {
+    const d = (data && typeof data === 'object' && !Array.isArray(data)) ? data.default : null;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return { chapter: null, path: null };
+
+    const chapter = typeof d.chapter === 'string' ? d.chapter : null;
+    const file    = typeof d.file === 'string' ? d.file.replace(/^\.?\//, '') : null;
+    if (file === null) return { chapter: chapter, path: null };
+
+    const path = file.includes('/') ? file : (chapter ? chapter + '/' + file : file);
+    const want = chapter !== null
+      ? chapter
+      : (path.includes('/') ? path.slice(0, path.indexOf('/')) : '');
+
+    return { chapter: want, path: path };
+  }
+
+  function showChapter(group, preferredPath, force) {
+    if (!force && dirty && !confirmDiscardIfDirty(null)) {
+      // Snap the box back to the chapter that is actually loaded.
+      if (currentChapter !== null) chapterEl.value = currentChapter;
+      return;
+    }
+
+    currentChapter = group.id;
+    chapterEl.value = group.id;
+    fillSelect(fileEl, fileItems(group), preferredPath);
+
+    if (!group.files.length) {
+      resetSelect(fileEl, 'picker.noJsonFiles');
+      return;
+    }
+    load(fileEl.value);
+  }
+
+  function populate(paths, preferredChapter, preferredPath, force) {
+    lastPaths = paths;
+    chapters = groupByChapter(paths);
+
+    if (!chapters.length) {
+      resetSelect(chapterEl, 'picker.noneFound');
+      resetSelect(fileEl, 'picker.noJsonFilesFound');
+      setNote(resultsEl, t('msg.noJsonFiles'));
+      return;
+    }
+
+    fillSelect(chapterEl, chapters.map((c) => ({ value: c.id, label: c.label })), preferredChapter);
+    showChapter(chapters.find((c) => c.id === chapterEl.value) || chapters[0], preferredPath, force);
+  }
+
+  async function loadManifest(preferredChapter, preferredPath, force) {
+    reloadEl.disabled = true;
+    setStatus('status.loadingList');
+
+    let paths = null;
+
+    try {
+      const data = JSON.parse(await fetchText(MANIFEST_URL));
+      const list = Array.isArray(data) ? data : data.files;
+      if (!Array.isArray(list)) throw new Error('manifest has no "files" array');
+      paths = list.filter((p) => typeof p === 'string');
+      // Only replace the remembered default when the manifest actually parsed.
+      manifestDefault = readManifestDefault(data);
+      if (manifestDefault.path && !paths.includes(manifestDefault.path)) {
+        console.warn('[json-query] manifest default is not in its file list:',
+                     manifestDefault.path);
+      }
+    } catch (err) {
+      console.warn('[json-query] manifest unavailable:', err);
+    }
+
+    if (paths === null) {
+      if (location.protocol === 'file:') {
+        manifestState = 'blocked';
+        resetSelect(chapterEl, 'picker.unavailable');
+        resetSelect(fileEl, 'picker.unavailable');
+        fileInfoState = { kind: 'key', key: 'bar.unavailable' };
+        applyFileInfo();
+        queryInfoEl.textContent = t('query.empty');
+        setStatus('status.blocked', 'err');
+        setNote(resultsEl, t('msg.fileProtocol'), true);
+        setNote(rowsEl, t('msg.fileProtocol'), true);
+        reloadEl.disabled = false;
+        return;
+      }
+      manifestState = 'fallback';
+      paths = FALLBACK_FILES;
+      setStatus('status.manifestMissing', 'err');
+    } else {
+      manifestState = 'ok';
+      setStatus('status.ready', 'ok');
+    }
+
+    // An explicit preference (refresh, language switch) wins; otherwise the
+    // manifest's default chapter/file decides what opens first.
+    populate(
+      paths,
+      preferredChapter != null ? preferredChapter : manifestDefault.chapter,
+      preferredPath != null ? preferredPath : manifestDefault.path,
+      force
+    );
+    reloadEl.disabled = false;
+  }
+
+  /* ============================== modes ============================= */
+
+  function setView(next) {
+    view = next;
+
+    const isQuery = next === 'query';
+    paneQueryEl.hidden = !isQuery;
+    paneEditEl.hidden = isQuery;
+
+    tabQueryEl.classList.toggle('active', isQuery);
+    tabEditEl.classList.toggle('active', !isQuery);
+    tabQueryEl.setAttribute('aria-selected', String(isQuery));
+    tabEditEl.setAttribute('aria-selected', String(!isQuery));
+
+    if (isQuery) {
+      buildIndex();      // pick up any edits made in the editor
+      runQuery();
+      if (!queryEl.disabled) queryEl.focus();
+    } else if (dirty) {
+      setStatus('status.edited', 'warn');
+    }
+  }
+
+  /* ============================== export ============================ */
+
+  async function copyJson() {
+    const text = editedJson();
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus('status.copied', 'ok');
+      return;
+    } catch (err) {
+      // Clipboard API needs a secure context; fall back to a temp selection.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      setStatus(ok ? 'status.copied' : 'status.copyFailed', ok ? 'ok' : 'err');
+    }
+  }
+
+  function downloadJson() {
+    const blob = new Blob([editedJson()], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = currentPath ? currentPath.split('/').pop() : 'data.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('status.downloaded', 'ok');
+  }
+
+  function revert() {
+    if (!currentPath) return;
+    if (!dirty || window.confirm(t('confirm.revert', { path: currentPath }))) {
+      load(currentPath);
+    }
+  }
+
+  /* ============================== events ============================ */
+
+  tabQueryEl.addEventListener('click', () => setView('query'));
+  tabEditEl.addEventListener('click', () => setView('edit'));
+
+  chapterEl.addEventListener('change', () => {
+    const group = chapters.find((c) => c.id === chapterEl.value);
+    if (group) showChapter(group, null, false);
+  });
+
+  fileEl.addEventListener('change', () => {
+    if (fileEl.value) load(fileEl.value);
+  });
+
+  queryEl.addEventListener('input', scheduleQuery);
+
+  queryEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      queryEl.value = '';
+      runQuery();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = resultsEl.querySelector('.card');
+      if (first) {
+        first.focus();
+        first.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  });
+
+  modeEl.addEventListener('change', runQuery);
+
+  clearEl.addEventListener('click', () => {
+    queryEl.value = '';
+    runQuery();
+    queryEl.focus();
+  });
+
+  addRowEl.addEventListener('click', addEntry);
+  revertEl.addEventListener('click', revert);
+  copyEl.addEventListener('click', copyJson);
+  downloadEl.addEventListener('click', downloadJson);
+
+  document.addEventListener('keydown', (e) => {
+    if (view === 'edit' && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (!downloadEl.disabled) downloadJson();
+    }
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  reloadEl.addEventListener('click', () =>
+    loadManifest(chapterEl.value, fileEl.value || currentPath, false));
+
+  langEl.addEventListener('change', () => setLang(langEl.value));
+
+  /* ============================= startup ============================ */
+
+  // Built from LOCALES rather than hardcoded, so adding a language is one entry
+  // in that list plus one file in i18n/.
+  function buildLangSelect() {
+    langEl.textContent = '';
+    for (const locale of LOCALES) {
+      const opt = document.createElement('option');
+      opt.value = locale.code;
+      opt.textContent = locale.name;
+      opt.lang = locale.code;
+      if (!MESSAGES[locale.code]) opt.disabled = true;   // catalog failed to load
+      langEl.appendChild(opt);
+    }
+    langEl.value = lang;
+  }
+
+  async function start() {
+    lang = detectLang();
+
+    // Everything on screen is a translation, so there is nothing sensible to
+    // render until the catalogs land.
+    if (!(await loadCatalogs())) {
+      showBootError();
+      return;
+    }
+
+    // A stored/detected locale whose file failed to load falls back to the base.
+    lang = usableLocale(lang);
+
+    buildLangSelect();
+    applyStaticText();
+    setView('query');
+    loadManifest(null, null, true);
+  }
+
+  start();
+})();
+</script>
+</body>
+</html>
