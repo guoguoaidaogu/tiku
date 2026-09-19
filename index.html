@@ -208,6 +208,9 @@
     white-space: pre-wrap;
   }
   .rows { flex: 1; min-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+  /* Shown in the editor when the filter matches no entry. */
+  .empty-cta { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px 4px; }
+  .empty-cta .note { padding: 0; }
   .row {
     display: flex;
     flex-wrap: wrap;
@@ -292,6 +295,26 @@
 
   <!-- ============================= EDIT ============================= -->
   <section class="pane" id="paneEdit" hidden>
+    <div class="querybar">
+      <span class="grow">
+        <label class="field" for="editQuery" data-i18n="edit.filterLabel">查找条目</label>
+        <input type="search" id="editQuery" data-i18n-placeholder="edit.filterPlaceholder"
+               placeholder="搜索条目…" autocomplete="off" spellcheck="false" disabled>
+      </span>
+      <span class="modes">
+        <label class="field" for="editMode" data-i18n="query.modeLabel">匹配方式</label>
+        <select id="editMode" disabled data-i18n-title="query.modeTitle"
+                title="查询与根键的匹配方式">
+          <option value="contains" data-i18n="mode.contains">包含</option>
+          <option value="prefix" data-i18n="mode.prefix">前缀匹配</option>
+          <option value="exact" data-i18n="mode.exact">精确匹配</option>
+          <option value="regex" data-i18n="mode.regex">正则表达式</option>
+        </select>
+      </span>
+      <button id="clearEditQuery" disabled data-i18n="query.clear">清空</button>
+      <span class="qinfo" id="editInfo">—</span>
+    </div>
+
     <div class="toolbar">
       <button id="addRow" class="primary" disabled data-i18n="edit.addEntry">+ 添加条目</button>
       <button id="revert" disabled data-i18n="edit.revert" data-i18n-title="edit.revertTitle"
@@ -536,6 +559,8 @@
   const queryEl    = $('query'),  modeEl = $('mode'), clearEl = $('clear');
   const queryInfoEl= $('queryInfo'), resultsEl = $('results');
   const rowsEl     = $('rows'), bannerEl = $('editBanner');
+  const editQueryEl= $('editQuery'), editModeEl = $('editMode');
+  const clearEditEl= $('clearEditQuery'), editInfoEl = $('editInfo');
   const addRowEl   = $('addRow'), revertEl = $('revert');
   const copyEl     = $('copyJson'), downloadEl = $('downloadJson');
   const fileInfoEl = $('fileInfo'), dirtyEl = $('dirty'), statusEl = $('status');
@@ -700,7 +725,7 @@
     const keys = Object.keys(data);
     const out = new Array(keys.length);
     for (let i = 0; i < keys.length; i++) {
-      out[i] = { key: keys[i], values: toValueList(data[keys[i]]), el: null };
+      out[i] = { key: keys[i], lower: keys[i].toLowerCase(), values: toValueList(data[keys[i]]), el: null };
     }
     return out;
   }
@@ -740,6 +765,35 @@
         return i === -1 ? null : [i, i + needle.length];
       }
     }
+  }
+
+  // Shared by the query pane and the editor's filter, so both match the same
+  // way. Returns a matcher plus whether the query is "browsing" (empty), and
+  // reports a bad regex as an error instead of throwing.
+  function buildMatcher(query, mode) {
+    if (query.trim() === '') {
+      return { browsing: true, error: null, matcher: () => null };
+    }
+
+    if (mode === 'regex') {
+      let re;
+      try {
+        re = new RegExp(query, 'i');
+      } catch (err) {
+        return { browsing: false, error: err, matcher: null };
+      }
+      return {
+        browsing: false,
+        error: null,
+        matcher: (entry) => {
+          const m = re.exec(entry.key);
+          return m ? [m.index, m.index + m[0].length] : null;
+        }
+      };
+    }
+
+    const needle = query.trim().toLowerCase();
+    return { browsing: false, error: null, matcher: (entry) => matchRange(entry, needle, mode) };
   }
 
   function keyNode(key, range) {
@@ -802,32 +856,19 @@
     }
 
     const raw = queryEl.value;
-    const mode = modeEl.value;
     clearEl.disabled = raw === '';
 
-    const browsing = raw.trim() === '';
-    let matcher = () => null;
+    const built = buildMatcher(raw, modeEl.value);
+    const browsing = built.browsing;
 
-    if (!browsing) {
-      if (mode === 'regex') {
-        let re;
-        try {
-          re = new RegExp(raw, 'i');
-        } catch (err) {
-          queryInfoEl.textContent = t('query.zeroMatches');
-          setStatus('status.badRegex', 'err');
-          setNote(resultsEl, t('query.invalidRegex', { msg: err.message }), true);
-          return;
-        }
-        matcher = (entry) => {
-          const m = re.exec(entry.key);
-          return m ? [m.index, m.index + m[0].length] : null;
-        };
-      } else {
-        const needle = raw.trim().toLowerCase();
-        matcher = (entry) => matchRange(entry, needle, mode);
-      }
+    if (built.error) {
+      queryInfoEl.textContent = t('query.zeroMatches');
+      setStatus('status.badRegex', 'err');
+      setNote(resultsEl, t('query.invalidRegex', { msg: built.error.message }), true);
+      return;
     }
+
+    const matcher = built.matcher;
 
     const t0 = performance.now();
     const matched = [];
@@ -952,12 +993,19 @@
 
   function renderRows() {
     rowsEl.textContent = '';
+    for (const item of model) item.el = null;   // refs into the DOM we just cleared
 
-    if (original === null) {
+    const loaded = original !== null;
+    editQueryEl.disabled = !loaded;
+    editModeEl.disabled = !loaded;
+    clearEditEl.disabled = editQueryEl.value === '' || !loaded;
+
+    if (!loaded) {
       addRowEl.disabled = true;
       revertEl.disabled = true;
       copyEl.disabled = true;
       downloadEl.disabled = true;
+      editInfoEl.textContent = t('query.empty');
       // A load failure or a blocked file:// page already put a message here.
       if (!loadFailure && manifestState !== 'blocked') {
         setNote(rowsEl, t('edit.chooseFile'));
@@ -968,9 +1016,69 @@
     addRowEl.disabled = false;
     revertEl.disabled = !dirty;
 
+    // The filter is a view over the working copy: hidden entries keep their
+    // edits and are still written out. Filtering only happens here, never while
+    // a key is being typed, so a row cannot vanish from under the caret.
+    const built = buildMatcher(editQueryEl.value, editModeEl.value);
+    const total = model.length;
+
+    if (built.error) {
+      editInfoEl.textContent = t('query.invalidRegex', { msg: built.error.message });
+      appendRows(model);
+      refreshEditState();
+      return;
+    }
+
+    if (built.browsing) {
+      editInfoEl.textContent = t('edit.infoAll', { n: total });
+      if (!total) {
+        // An empty file: nothing to filter, so offer the first entry instead.
+        rowsEl.appendChild(emptyState(null));
+      } else {
+        appendRows(model);
+      }
+      refreshEditState();
+      return;
+    }
+
+    const shown = model.filter((item) => built.matcher(item) !== null);
+    editInfoEl.textContent = t('edit.infoFiltered', { n: shown.length, total: total });
+
+    if (!shown.length) {
+      rowsEl.appendChild(emptyState(editQueryEl.value));
+      refreshEditState();
+      return;
+    }
+
+    appendRows(shown);
+    refreshEditState();
+  }
+
+  // Shown when there is nothing to list: either the filter matched no entry (so
+  // offer to create exactly that one), or the file itself is empty.
+  function emptyState(query) {
+    const wrap = document.createElement('div');
+    wrap.className = 'empty-cta';
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = query === null
+      ? t('edit.emptyFile')
+      : t('edit.filterEmpty', { q: JSON.stringify(query) });
+
+    const add = document.createElement('button');
+    add.className = 'primary';
+    add.textContent = query === null ? t('edit.addEntry') : t('edit.addFromQuery', { q: query });
+    add.addEventListener('click', () => addEntry(query === null ? '' : query));
+
+    wrap.append(note, add);
+    return wrap;
+  }
+
+  function appendRows(items) {
     const frag = document.createDocumentFragment();
 
-    model.forEach((item, index) => {
+    for (const item of items) {
       const row = document.createElement('div');
       row.className = 'row';
 
@@ -981,7 +1089,6 @@
       keyInput.value = item.key;
       keyInput.spellcheck = false;
       keyInput.setAttribute('aria-label', t('edit.rootKeyAria'));
-
       const meta = document.createElement('div');
       meta.className = 'meta';
       const count = document.createElement('span');
@@ -1010,6 +1117,7 @@
 
       keyInput.addEventListener('input', () => {
         item.key = keyInput.value;
+        item.lower = keyInput.value.toLowerCase();
         refreshEditState();
       });
 
@@ -1021,24 +1129,26 @@
       rm.addEventListener('click', () => {
         model.splice(model.indexOf(item), 1);
         renderRows();
-        refreshEditState();
       });
 
       row.append(left, right, rm);
       frag.appendChild(row);
-    });
+    }
 
     rowsEl.appendChild(frag);
-    refreshEditState();
   }
 
-  function addEntry() {
+  function addEntry(key) {
     if (original === null) return;
-    const item = { key: '', values: [], el: null };
+
+    const text = key || '';
+    const item = { key: text, lower: text.toLowerCase(), values: [], el: null };
     model.push(item);
     renderRows();
+
     if (item.el) {
-      item.el.keyInput.focus();
+      // A key was supplied by the filter, so the values are what is missing.
+      (text ? item.el.valInput : item.el.keyInput).focus();
       item.el.row.scrollIntoView({ block: 'nearest' });
     }
   }
@@ -1076,6 +1186,7 @@
     }
 
     currentPath = path;
+    editQueryEl.value = '';      // a fresh file starts unfiltered
     setStatus('status.loading');
     queryEl.disabled = true;
 
@@ -1308,8 +1419,10 @@
       buildIndex();      // pick up any edits made in the editor
       runQuery();
       if (!queryEl.disabled) queryEl.focus();
-    } else if (dirty) {
-      setStatus('status.edited', 'warn');
+    } else {
+      renderRows();
+      if (!editQueryEl.disabled) editQueryEl.focus();
+      if (dirty) setStatus('status.edited', 'warn');
     }
   }
 
@@ -1393,10 +1506,33 @@
     queryEl.focus();
   });
 
-  addRowEl.addEventListener('click', addEntry);
+  addRowEl.addEventListener('click', () => addEntry(''));
   revertEl.addEventListener('click', revert);
   copyEl.addEventListener('click', copyJson);
   downloadEl.addEventListener('click', downloadJson);
+
+  // Editor filter: re-filter only when the filter itself changes, so editing a
+  // key can never make its own row disappear from under the caret.
+  editQueryEl.addEventListener('input', renderRows);
+  editModeEl.addEventListener('change', renderRows);
+
+  editQueryEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      editQueryEl.value = '';
+      renderRows();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const first = rowsEl.querySelector('.row input');
+      if (first) first.focus();
+      else if (editQueryEl.value.trim() !== '') addEntry(editQueryEl.value);
+    }
+  });
+
+  clearEditEl.addEventListener('click', () => {
+    editQueryEl.value = '';
+    renderRows();
+    editQueryEl.focus();
+  });
 
   document.addEventListener('keydown', (e) => {
     if (view === 'edit' && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {

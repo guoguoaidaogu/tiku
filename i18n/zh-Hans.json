@@ -40,6 +40,15 @@
   "edit.copyTitle": "将编辑后的 JSON 复制到剪贴板",
   "edit.download": "下载 JSON",
   "edit.downloadTitle": "下载编辑后的 JSON（⌘/Ctrl+S）",
+  "edit.filterLabel": "查找",
+  "edit.filterPlaceholder": "按根键筛选条目…",
+  "edit.infoAll": {
+    "other": "全部 {n} 个条目"
+  },
+  "edit.infoFiltered": "{total} 个条目中的 {n} 个",
+  "edit.filterEmpty": "没有条目匹配 {q}。",
+  "edit.emptyFile": "此文件还没有条目。",
+  "edit.addFromQuery": "+ 添加条目 {q}",
   "edit.hint": "每行一个值 · 忽略末尾的空行",
   "edit.chooseFile": "选择一个文件以开始编辑它的根键。",
   "edit.emptyList": "（空列表）",

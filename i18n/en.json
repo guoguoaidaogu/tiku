@@ -40,6 +40,16 @@
   "edit.copyTitle": "Copy the edited JSON to the clipboard",
   "edit.download": "Download JSON",
   "edit.downloadTitle": "Download the edited JSON (⌘/Ctrl+S)",
+  "edit.filterLabel": "Find",
+  "edit.filterPlaceholder": "Filter entries by root key…",
+  "edit.infoAll": {
+    "one": "1 entry",
+    "other": "all {n} entries"
+  },
+  "edit.infoFiltered": "{n} of {total} entries",
+  "edit.filterEmpty": "No entry matches {q}.",
+  "edit.emptyFile": "This file has no entries yet.",
+  "edit.addFromQuery": "+ Add entry {q}",
   "edit.hint": "One value per line · trailing blank lines ignored",
   "edit.chooseFile": "Choose a file to start editing its root keys.",
   "edit.emptyList": "(empty list)",
