@@ -4,9 +4,6 @@
     "file": "Example.json"
   },
   "files": [
-    "ExampleChapter/Example.json",
-    "chapter1/test1_1.json",
-    "chapter2/test2_1.json",
-    "chapter2/test2_2.json"
+    "ExampleChapter/Example.json"
   ]
 }

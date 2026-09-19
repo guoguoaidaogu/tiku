@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Rebuild assets/manifest.json from the .json files found under assets/.
 
-The manifest lists every JSON file and records which one the webpage should
-open by default:
+The file list is rebuilt from disk on every run, so entries whose file has been
+deleted or renamed are dropped automatically, as is a `default` that points at a
+file that no longer exists. The manifest is rewritten even when nothing is left,
+so a fully emptied assets/ directory cannot leave stale entries behind. Every run
+reports what it removed and added.
 
     {
-      "default": { "chapter": "chapter2", "file": "test2_2.json" },
-      "files": ["chapter1/test1_1.json", ...]
+      "default": { "chapter": "ExampleChapter", "file": "Example.json" },
+      "files": ["ExampleChapter/Example.json", ...]
     }
 
 Usage:
@@ -14,8 +17,8 @@ Usage:
     python3 scripts/build_manifest.py --default chapter2/test2_2.json
     python3 scripts/build_manifest.py --clear-default
 
-Without --default, an existing valid default is preserved; otherwise the first
-file in sorted order becomes the default.
+Without --default, an existing default is kept only while its file still exists;
+otherwise the default is removed and the webpage opens the first file.
 """
 
 import argparse
@@ -34,26 +37,67 @@ def split_path(path: str) -> tuple[str, str]:
     return (head, tail) if sep else ("", head)
 
 
-def read_existing_default() -> dict | None:
-    try:
-        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-    default = data.get("default") if isinstance(data, dict) else None
-    if not isinstance(default, dict):
-        return None
-
-    chapter = default.get("chapter")
-    file = default.get("file")
-    if not isinstance(chapter, str) or not isinstance(file, str):
-        return None
-    return {"chapter": chapter, "file": file}
-
-
 def as_path(default: dict) -> str:
     chapter = default["chapter"]
     return f"{chapter}/{default['file']}" if chapter else default["file"]
+
+
+def read_previous() -> tuple[list[str], dict | None]:
+    """The manifest currently on disk, as (files, default).
+
+    Tolerant of a missing, unreadable or legacy manifest: a bare JSON array is
+    read as the file list.
+    """
+    try:
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [], None
+
+    if isinstance(data, list):
+        listed = data
+        default = None
+    elif isinstance(data, dict):
+        listed = data.get("files")
+        default = data.get("default")
+    else:
+        return [], None
+
+    files = [p for p in listed if isinstance(p, str)] if isinstance(listed, list) else []
+
+    if not isinstance(default, dict):
+        default = None
+    else:
+        chapter, file = default.get("chapter"), default.get("file")
+        if not (isinstance(chapter, str) and isinstance(file, str)):
+            default = None
+        else:
+            default = {"chapter": chapter, "file": file}
+
+    return files, default
+
+
+def scan_assets() -> list[str]:
+    """Every .json under assets/, relative and sorted. Nothing else is trusted."""
+    return sorted(
+        p.relative_to(ASSETS).as_posix()
+        for p in ASSETS.rglob("*.json")
+        if p.is_file() and p.name != MANIFEST.name
+    )
+
+
+def report(removed: list[str], added: list[str], default: dict | None, note: str) -> None:
+    if removed:
+        word = "entry" if len(removed) == 1 else "entries"
+        print(f"\n{len(removed)} {word} removed (no longer on disk):")
+        for path in removed:
+            print(f"  - {path}")
+    if added:
+        word = "entry" if len(added) == 1 else "entries"
+        print(f"\n{len(added)} {word} added:")
+        for path in added:
+            print(f"  - {path}")
+
+    print(f"\ndefault: {as_path(default) if default else '(none)'} ({note})")
 
 
 def main() -> int:
@@ -70,42 +114,32 @@ def main() -> int:
         print(f"error: {ASSETS} does not exist", file=sys.stderr)
         return 1
 
-    files = sorted(
-        p.relative_to(ASSETS).as_posix()
-        for p in ASSETS.rglob("*.json")
-        if p.is_file() and p.name != MANIFEST.name
-    )
+    previous_files, previous_default = read_previous()
+    files = scan_assets()
+    on_disk = set(files)
 
-    if not files:
-        print("error: no .json files found under assets/", file=sys.stderr)
-        return 1
+    removed = [p for p in previous_files if p not in on_disk]
+    added = [p for p in files if p not in set(previous_files)]
 
-    # Work out the default.
+    # Work out the default. A default whose file is gone is removed, never
+    # silently repointed at an unrelated file.
     if args.clear_default:
-        default = None
-        note = "default cleared on request"
+        default, note = None, "cleared on request"
     elif args.default:
         requested = args.default.strip().lstrip("./")
-        if requested not in files:
+        if requested not in on_disk:
             print(f"error: {requested!r} is not one of the known files:", file=sys.stderr)
             for name in files:
                 print(f"  - {name}", file=sys.stderr)
             return 1
         chapter, name = split_path(requested)
-        default = {"chapter": chapter, "file": name}
-        note = "default set on request"
+        default, note = {"chapter": chapter, "file": name}, "set on request"
+    elif previous_default is None:
+        default, note = None, "none recorded"
+    elif as_path(previous_default) in on_disk:
+        default, note = previous_default, "kept, its file still exists"
     else:
-        existing = read_existing_default()
-        if existing and as_path(existing) in files:
-            default = existing
-            note = "kept the existing default"
-        else:
-            if existing:
-                print(f"note: previous default {as_path(existing)!r} no longer exists",
-                      file=sys.stderr)
-            chapter, name = split_path(files[0])
-            default = {"chapter": chapter, "file": name}
-            note = "fell back to the first file"
+        default, note = None, f"was {as_path(previous_default)!r}, no longer exists - removed"
 
     payload: dict = {}
     if default is not None:
@@ -114,10 +148,16 @@ def main() -> int:
 
     MANIFEST.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-    print(f"wrote {MANIFEST.relative_to(ROOT)} with {len(files)} file(s) ({note}):")
+    print(f"wrote {MANIFEST.relative_to(ROOT)} with {len(files)} file(s):")
     for name in files:
         marker = "  <- default" if default and as_path(default) == name else ""
         print(f"  - {name}{marker}")
+
+    if not files:
+        print("warning: no .json files found under assets/ - the file list is now empty",
+              file=sys.stderr)
+
+    report(removed, added, default, note)
     return 0
 
 
