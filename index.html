@@ -94,8 +94,12 @@
     background: var(--panel);
   }
   .fieldgroup { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .fieldgroup.source { flex: 0 1 300px; }
+  .fieldgroup.location { flex: 1 1 320px; }
   .fieldgroup.chapter { flex: 0 1 210px; }
   .fieldgroup.file { flex: 1 1 280px; }
+  .picker .hint { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+                  text-overflow: ellipsis; }
   label.field { font-size: 13px; color: var(--muted); white-space: nowrap; }
   select, input[type=search], input[type=text], textarea {
     font: inherit;
@@ -253,6 +257,34 @@
     <button id="tabEdit" role="tab" aria-selected="false" data-pane="edit" data-i18n="tab.edit">编辑</button>
   </div>
 
+  <!-- Where the files come from: the bundled assets/ folder, an online URL or
+       server folder, or a folder picked from this computer. -->
+  <div class="picker">
+    <span class="fieldgroup source">
+      <label class="field" for="sourceSelect" data-i18n="source.label">文件来源</label>
+      <select id="sourceSelect" data-i18n-title="source.title" title="选择 JSON 文件的来源">
+        <option value="assets" data-i18n="source.assets">./assets（默认）</option>
+        <option value="external" data-i18n="source.external">在线 URL 或服务器文件夹</option>
+        <option value="folder" data-i18n="source.folder">本地文件夹（离线）</option>
+      </select>
+    </span>
+
+    <span class="fieldgroup location" id="locationGroup" hidden>
+      <input type="text" id="sourceInput" autocomplete="off" spellcheck="false"
+             data-i18n-placeholder="source.placeholder"
+             placeholder="https://example.com/data/ 或 ../shared/">
+      <button id="sourceLoad" data-i18n="source.load">载入</button>
+    </span>
+
+    <span class="fieldgroup location" id="folderGroup" hidden>
+      <button id="sourcePick" data-i18n="source.choose">选择文件夹…</button>
+      <span class="hint" id="folderName"></span>
+    </span>
+
+    <input type="file" id="folderPicker" webkitdirectory directory multiple hidden>
+  </div>
+
+  <!-- Which chapter and file inside that source. -->
   <div class="picker">
     <span class="fieldgroup chapter">
       <label class="field" for="chapterSelect" data-i18n="picker.chapter">章节</label>
@@ -263,7 +295,7 @@
       <select id="fileSelect" disabled><option data-i18n="picker.loading">加载中…</option></select>
     </span>
     <button id="reload" data-i18n="picker.refresh" data-i18n-title="picker.refreshTitle"
-            title="重新读取 assets/manifest.json">刷新列表</button>
+            title="重新读取来源中的清单或文件夹">刷新列表</button>
   </div>
 
   <!-- ============================ QUERY ============================ -->
@@ -346,21 +378,23 @@
 (function () {
   'use strict';
 
-  const MANIFEST_URL = 'assets/manifest.json';
-  const ASSETS_BASE  = 'assets/';
+  const ASSETS_BASE  = 'assets/';      // the default source
+  const MANIFEST_NAME= 'manifest.json';
+  const CONFIG_URL   = 'config.json';  // optional page configuration
+  // Sources a config file may select. 'folder' is deliberately absent: a browser
+  // can only read a local directory after the visitor picks it.
+  const SOURCE_KINDS = ['assets', 'external'];
   const MAX_RESULTS  = 300;    // cap on rendered cards; the match count stays exact
   const DEBOUNCE_MS  = 50;
   const LANG_KEY     = 'json-query.lang';
   const BASE_LANG    = 'en';       // locale every other one falls back to; must load
   const DEFAULT_LANG = 'zh-Hans';  // used until the visitor picks a language
 
-  // Used only if assets/manifest.json cannot be fetched but the page is still
-  // served over HTTP (i.e. the manifest was deleted). Keep in sync by running
-  // `python3 scripts/build_manifest.py`.
+  // Used only if the default source's manifest cannot be fetched but the page is
+  // still served over HTTP (i.e. the manifest was deleted). Keep in sync by
+  // running `python3 scripts/build_manifest.py`.
   const FALLBACK_FILES = [
-    'chapter1/test1_1.json',
-    'chapter2/test2_1.json',
-    'chapter2/test2_2.json'
+    'ExampleChapter/Example.json'
   ];
 
   /* ============================== i18n ============================== */
@@ -556,6 +590,11 @@
   const tabQueryEl = $('tabQuery'),  tabEditEl = $('tabEdit');
   const paneQueryEl= $('paneQuery'), paneEditEl= $('paneEdit');
   const chapterEl  = $('chapterSelect'), fileEl = $('fileSelect'), reloadEl = $('reload');
+  const sourceEl   = $('sourceSelect'), sourceInputEl = $('sourceInput');
+  const sourceLoadEl = $('sourceLoad'), sourcePickEl = $('sourcePick');
+  const folderPickerEl = $('folderPicker');
+  const locationGroupEl = $('locationGroup'), folderGroupEl = $('folderGroup');
+  const folderNameEl = $('folderName');
   const queryEl    = $('query'),  modeEl = $('mode'), clearEl = $('clear');
   const queryInfoEl= $('queryInfo'), resultsEl = $('results');
   const rowsEl     = $('rows'), bannerEl = $('editBanner');
@@ -579,12 +618,22 @@
   // Language-independent render state, so switching language can repaint
   // everything without re-reading anything from disk or losing edits.
   let lastPaths     = null;  // last manifest file list
-  let manifestState = 'ok';  // 'ok' | 'fallback' | 'blocked'
+  let manifestState = 'ok';  // 'ok' | 'fallback' | 'blocked' | 'error'
   let loadFailure   = null;  // null | { kind: 'fetch'|'shape', ... }
   let statusState   = { key: 'status.idle', kind: '' };
   let fileInfoState = { kind: 'key', key: 'bar.noFile' };
   // The manifest's own default selection; see readManifestDefault().
   let manifestDefault = { chapter: null, path: null };
+
+  // Where files come from. `kind` is 'assets' (the bundled folder), 'external'
+  // (an online URL or another folder on this server) or 'folder' (a directory
+  // picked from this computer, read through the File API with no server).
+  let source = { kind: 'assets', base: ASSETS_BASE, files: null, rootName: '' };
+  let sourceFailure = null;   // null | { kind, base } for the repaint path
+  let folderLabel   = '';     // the picked folder's name, for the same reason
+
+  // Page configuration read from config.json at startup; see loadConfig().
+  let pageConfig = { source: { kind: 'assets', location: '' } };
 
   /* ============================== i18n ============================== */
 
@@ -627,7 +676,8 @@
   // Rebuild the picker option labels in the active language without touching
   // the loaded file or the working copy.
   function refreshPicker() {
-    if (manifestState === 'blocked' || !lastPaths) return;
+    syncSourceControls();
+    if (manifestState === 'blocked' || manifestState === 'error' || !lastPaths) return;
 
     chapters = groupByChapter(lastPaths);
 
@@ -656,9 +706,14 @@
     refreshPicker();
     applyFileInfo();
 
-    if (manifestState === 'blocked') {
-      setNote(resultsEl, t('msg.fileProtocol'), true);
-      setNote(rowsEl, t('msg.fileProtocol'), true);
+    if (manifestState === 'blocked' || manifestState === 'error') {
+      // Notes go in after renderRows(), which clears both containers.
+      renderRows();
+      const msg = manifestState === 'blocked'
+        ? t('msg.fileProtocol')
+        : sourceErrorText(sourceFailure || { kind: 'network', base: source.base });
+      setNote(resultsEl, msg, true);
+      setNote(rowsEl, msg, true);
     } else if (loadFailure) {
       renderRows();
       showFailureNotes();
@@ -1006,8 +1061,8 @@
       copyEl.disabled = true;
       downloadEl.disabled = true;
       editInfoEl.textContent = t('query.empty');
-      // A load failure or a blocked file:// page already put a message here.
-      if (!loadFailure && manifestState !== 'blocked') {
+      // A load failure or an unusable source already put a message here.
+      if (!loadFailure && manifestState !== 'blocked' && manifestState !== 'error') {
         setNote(rowsEl, t('edit.chooseFile'));
       }
       return;
@@ -1192,7 +1247,7 @@
 
     let data;
     try {
-      data = JSON.parse((await fetchText(ASSETS_BASE + encodeURI(path))).replace(/^\uFEFF/, ''));
+      data = JSON.parse((await readText(path)).replace(/^\uFEFF/, ''));
     } catch (err) {
       entries = [];
       model = [];
@@ -1347,58 +1402,351 @@
     showChapter(chapters.find((c) => c.id === chapterEl.value) || chapters[0], preferredPath, force);
   }
 
-  async function loadManifest(preferredChapter, preferredPath, force) {
-    reloadEl.disabled = true;
-    setStatus('status.loadingList');
+  /* ========================= sources + listing ====================== */
 
-    let paths = null;
+  // Read one file from the active source. The folder source goes through the
+  // File API (no server involved); the others go over HTTP.
+  async function readText(path) {
+    if (source.kind === 'folder') {
+      const file = source.files.get(path);
+      if (!file) throw new Error('no such file in the folder: ' + path);
+      return file.text();
+    }
+    return fetchText(source.base + encodeURI(path));
+  }
 
-    try {
-      const data = JSON.parse(await fetchText(MANIFEST_URL));
-      const list = Array.isArray(data) ? data : data.files;
-      if (!Array.isArray(list)) throw new Error('manifest has no "files" array');
-      paths = list.filter((p) => typeof p === 'string');
-      // Only replace the remembered default when the manifest actually parsed.
-      manifestDefault = readManifestDefault(data);
-      if (manifestDefault.path && !paths.includes(manifestDefault.path)) {
-        console.warn('[json-query] manifest default is not in its file list:',
-                     manifestDefault.path);
+  // A manifest is optional for a picked folder: its files are listed straight
+  // from the directory the visitor chose.
+  async function readListing() {
+    if (source.kind === 'folder') {
+      const entries = [];
+      let manifest = null;
+
+      for (const [path, file] of source.files) {
+        if (!/\.json$/i.test(path)) continue;
+        if (path === MANIFEST_NAME) {
+          try {
+            manifest = JSON.parse(await file.text());
+          } catch (err) {
+            console.warn('[json-query] ignoring unreadable manifest in folder:', err.message);
+          }
+          continue;
+        }
+        entries.push(path);
       }
-    } catch (err) {
-      console.warn('[json-query] manifest unavailable:', err);
+
+      entries.sort();
+      if (!entries.length) throw { kind: 'emptyFolder' };
+      return { paths: entries, def: readManifestDefault(manifest) };
     }
 
-    if (paths === null) {
-      if (location.protocol === 'file:') {
-        manifestState = 'blocked';
-        resetSelect(chapterEl, 'picker.unavailable');
-        resetSelect(fileEl, 'picker.unavailable');
-        fileInfoState = { kind: 'key', key: 'bar.unavailable' };
-        applyFileInfo();
-        queryInfoEl.textContent = t('query.empty');
-        setStatus('status.blocked', 'err');
-        setNote(resultsEl, t('msg.fileProtocol'), true);
-        setNote(rowsEl, t('msg.fileProtocol'), true);
+    let data;
+    try {
+      data = JSON.parse(await fetchText(source.base + MANIFEST_NAME));
+    } catch (err) {
+      // A 404 means the folder exists but has no manifest; anything else is a
+      // network or CORS problem (typical for a cross-origin online folder).
+      if (err && err.detail && err.detail.vars && err.detail.vars.status === 404) {
+        throw { kind: 'noManifest', base: source.base };
+      }
+      if (location.protocol === 'file:') throw { kind: 'fileProtocol' };
+      throw { kind: 'network', base: source.base };
+    }
+
+    const list = Array.isArray(data) ? data : data.files;
+    if (!Array.isArray(list)) throw { kind: 'noManifest', base: source.base };
+    return {
+      paths: list.filter((p) => typeof p === 'string'),
+      def: readManifestDefault(data)
+    };
+  }
+
+  function sourceErrorText(failure) {
+    switch (failure.kind) {
+      case 'fileProtocol':  return t('msg.fileProtocol');
+      case 'emptyFolder':   return t('source.emptyFolder');
+      case 'badLocation':   return t('source.badLocation');
+      case 'fileLocation':  return t('source.fileLocation');
+      case 'noManifest':    return t('source.noManifest', { base: failure.base });
+      default:              return t('source.network', { base: failure.base });
+    }
+  }
+
+  function showSourceFailure(failure) {
+    sourceFailure = failure;
+    manifestState = 'error';
+    lastPaths = null;
+    chapters = [];
+
+    resetSelect(chapterEl, 'picker.unavailable');
+    resetSelect(fileEl, 'picker.unavailable');
+    fileInfoState = { kind: 'key', key: 'bar.unavailable' };
+    applyFileInfo();
+    queryInfoEl.textContent = t('query.empty');
+
+    const msg = sourceErrorText(failure);
+    setNote(resultsEl, msg, true);
+    setNote(rowsEl, msg, true);
+    // refreshEditState() paints the pill too, so it must run first.
+    refreshEditState();
+    setStatus(failure.kind === 'fileProtocol' ? 'status.blocked' : 'status.loadError', 'err');
+  }
+
+  async function loadListing(preferredChapter, preferredPath, force) {
+    reloadEl.disabled = true;
+    setStatus('status.loadingList');
+    sourceFailure = null;
+
+    let listing;
+    try {
+      listing = await readListing();
+    } catch (failure) {
+      console.warn('[json-query] source unavailable:', failure);
+      if (failure && failure.kind === 'network' && source.kind === 'assets' &&
+          location.protocol === 'file:') {
+        showSourceFailure({ kind: 'fileProtocol' });
         reloadEl.disabled = false;
         return;
       }
-      manifestState = 'fallback';
-      paths = FALLBACK_FILES;
-      setStatus('status.manifestMissing', 'err');
-    } else {
-      manifestState = 'ok';
-      setStatus('status.ready', 'ok');
+      if (failure && failure.kind === 'noManifest' && source.kind === 'assets') {
+        // The bundled folder lost its manifest but is still served over HTTP.
+        manifestState = 'fallback';
+        manifestDefault = { chapter: null, path: null };
+        setStatus('status.manifestMissing', 'err');
+        populate(FALLBACK_FILES, preferredChapter, preferredPath, force);
+        reloadEl.disabled = false;
+        return;
+      }
+      showSourceFailure(failure || { kind: 'network', base: source.base });
+      reloadEl.disabled = false;
+      return;
     }
+
+    manifestState = 'ok';
+    manifestDefault = listing.def;
+
+    if (manifestDefault.path && !listing.paths.includes(manifestDefault.path)) {
+      console.warn('[json-query] manifest default is not in its file list:', manifestDefault.path);
+    }
+    setStatus('status.ready', 'ok');
 
     // An explicit preference (refresh, language switch) wins; otherwise the
     // manifest's default chapter/file decides what opens first.
     populate(
-      paths,
+      listing.paths,
       preferredChapter != null ? preferredChapter : manifestDefault.chapter,
       preferredPath != null ? preferredPath : manifestDefault.path,
       force
     );
     reloadEl.disabled = false;
+  }
+
+  /* ============================== sources =========================== */
+
+  // Turn what the visitor typed into a fetchable base URL, or explain why not.
+  function resolveLocation(raw) {
+    const text = raw.trim();
+    if (text === '') return { failure: { kind: 'badLocation' } };
+
+    let url;
+    try {
+      url = new URL(text, document.baseURI);
+    } catch (err) {
+      return { failure: { kind: 'badLocation' } };
+    }
+
+    if (url.protocol === 'file:') return { failure: { kind: 'fileLocation' } };
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return { failure: { kind: 'badLocation' } };
+    }
+
+    let href = url.href;
+    if (!href.endsWith('/')) href += '/';
+    return { base: href };
+  }
+
+  function syncSourceControls() {
+    // Driven by the select, not by `source`, so choosing "external" or "folder"
+    // reveals its control before anything has actually been loaded.
+    const kind = sourceEl.value;
+    locationGroupEl.hidden = kind !== 'external';
+    folderGroupEl.hidden = kind !== 'folder';
+    folderNameEl.textContent = folderLabel;
+    folderNameEl.title = folderLabel;
+  }
+
+  // Point the page at a different source, replacing whatever is loaded.
+  async function useSource(next, force) {
+    if (!force && dirty && !confirmDiscardIfDirty(null)) {
+      sourceEl.value = source.kind;      // snap the box back to what is loaded
+      syncSourceControls();
+      return false;
+    }
+
+    source = next;
+    sourceEl.value = next.kind;
+    syncSourceControls();
+
+    // Nothing from the old source may survive the switch.
+    currentPath = null;
+    currentChapter = null;
+    original = null;
+    model = [];
+    entries = [];
+    setDirty(false);
+    loadFailure = null;
+    editQueryEl.value = '';
+
+    await loadListing(null, null, true);
+    return true;
+  }
+
+  async function applyTypedSource() {
+    const resolved = resolveLocation(sourceInputEl.value);
+    if (resolved.failure) {
+      showSourceFailure(resolved.failure);
+      reloadEl.disabled = false;
+      return;
+    }
+    await useSource({ kind: 'external', base: resolved.base, files: null, rootName: '' }, false);
+  }
+
+  /* ============================ config.json ========================= */
+
+  // Remove // and /* */ comments so config.json can be documented inline.
+  // String-aware: a "//" inside a value (very likely, since locations are URLs)
+  // is left alone, as is an escaped quote inside a string.
+  function stripJsonComments(text) {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+
+      if (inString) {
+        out += c;
+        if (escaped) escaped = false;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+
+      if (c === '"') {
+        inString = true;
+        out += c;
+      } else if (c === '/' && text[i + 1] === '/') {
+        while (i < text.length && text[i] !== '\n') i++;
+        out += '\n';                       // keep the line count intact
+      } else if (c === '/' && text[i + 1] === '*') {
+        i += 2;
+        while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+        i++;                               // skip the closing '/'
+        out += ' ';                        // keep tokens apart
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+
+  // Optional page configuration:
+  //   { "source": { "kind": "assets" | "external", "location": "…" } }
+  // `location` prefills the external box; `kind: "external"` makes the page open
+  // there. Anything missing, unreadable or unrecognised is ignored, so a broken
+  // config can never stop the page from loading its default source.
+  async function loadConfig() {
+    let data;
+    try {
+      data = JSON.parse(stripJsonComments(await fetchText(CONFIG_URL)));
+    } catch (err) {
+      console.info('[json-query] no usable ' + CONFIG_URL + ':', err.message);
+      return;
+    }
+
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      console.warn('[json-query] ' + CONFIG_URL + ' must contain an object; ignoring it');
+      return;
+    }
+
+    const src = data.source;
+    if (src === undefined) return;
+    if (src === null || typeof src !== 'object' || Array.isArray(src)) {
+      console.warn('[json-query] config.source must be an object; ignoring it');
+      return;
+    }
+
+    if (typeof src.location === 'string') {
+      pageConfig.source.location = src.location.trim();
+    } else if (src.location !== undefined) {
+      console.warn('[json-query] config.source.location must be a string; ignoring it');
+    }
+
+    if (src.kind !== undefined) {
+      const kind = typeof src.kind === 'string' ? src.kind.trim().toLowerCase() : '';
+      if (SOURCE_KINDS.includes(kind)) pageConfig.source.kind = kind;
+      else console.warn('[json-query] config.source.kind must be one of ' +
+                        SOURCE_KINDS.join(', ') + '; using "assets"');
+    }
+  }
+
+  // Open whatever config.json asked for, falling back to the bundled assets.
+  async function startFromConfig() {
+    const cfg = pageConfig.source;
+    sourceInputEl.value = cfg.location;     // prefilled either way
+
+    if (cfg.kind === 'external') {
+      const resolved = resolveLocation(cfg.location);
+      if (!resolved.failure) {
+        sourceEl.value = 'external';
+        syncSourceControls();
+        await useSource({ kind: 'external', base: resolved.base, files: null, rootName: '' }, true);
+        return;
+      }
+      console.warn('[json-query] config.source.location is unusable; opening assets instead');
+    }
+
+    sourceEl.value = 'assets';
+    syncSourceControls();
+    await loadListing(null, null, true);
+  }
+
+  // The picked directory, flattened to "path relative to that folder" -> File.
+  function usePickedFolder(fileList) {
+    const files = new Map();
+    let rootName = '';
+
+    for (const file of fileList) {
+      const rel = file.webkitRelativePath || file.name;
+      const cut = rel.indexOf('/');
+      if (cut === -1) continue;                 // not inside the chosen folder
+      if (!rootName) rootName = rel.slice(0, cut);
+      files.set(rel.slice(cut + 1), file);
+    }
+
+    if (!files.size) {
+      showSourceFailure({ kind: 'emptyFolder' });
+      return;
+    }
+
+    folderLabel = rootName;
+    useSource({ kind: 'folder', base: '', files: files, rootName: rootName }, false);
+  }
+
+  function sourceChanged() {
+    const kind = sourceEl.value;
+
+    // The two external modes need something from the visitor first (a location
+    // or a folder), so the listing only changes once that arrives.
+    syncSourceControls();
+
+    if (kind === 'assets') {
+      useSource({ kind: 'assets', base: ASSETS_BASE, files: null, rootName: '' }, false);
+    } else if (kind === 'external') {
+      sourceInputEl.focus();
+    } else {
+      folderPickerEl.click();
+    }
   }
 
   /* ============================== modes ============================= */
@@ -1547,8 +1895,28 @@
     e.returnValue = '';
   });
 
+  /* ============================== source =========================== */
+
+  sourceEl.addEventListener('change', sourceChanged);
+  sourceLoadEl.addEventListener('click', applyTypedSource);
+
+  sourceInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyTypedSource();
+    }
+  });
+
+  sourcePickEl.addEventListener('click', () => folderPickerEl.click());
+
+  folderPickerEl.addEventListener('change', () => {
+    const picked = Array.from(folderPickerEl.files || []);
+    folderPickerEl.value = '';      // allow re-picking the same folder
+    if (picked.length) usePickedFolder(picked);
+  });
+
   reloadEl.addEventListener('click', () =>
-    loadManifest(chapterEl.value, fileEl.value || currentPath, false));
+    loadListing(chapterEl.value, fileEl.value || currentPath, false));
 
   langEl.addEventListener('change', () => setLang(langEl.value));
 
@@ -1585,7 +1953,10 @@
     buildLangSelect();
     applyStaticText();
     setView('query');
-    loadManifest(null, null, true);
+    // config.json may point the page at another source; when it does not, the
+    // bundled assets/ folder is used.
+    await loadConfig();
+    await startFromConfig();
   }
 
   start();
