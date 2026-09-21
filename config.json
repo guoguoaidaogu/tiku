@@ -1,6 +1,6 @@
 {
   "source": {
-    "kind": "assets",
-    "location": ""
+    "kind": "external",
+    "location": "https://gh.shertist.fun/tiku/"
   }
 }
